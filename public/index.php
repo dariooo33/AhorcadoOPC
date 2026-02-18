@@ -4,9 +4,19 @@ declare(strict_types=1);
 require_once dirname(__DIR__) . '/config/app.php';
 require_once APP_ROOT . '/controllers/AuthController.php';
 require_once APP_ROOT . '/controllers/PageController.php';
+require_once APP_ROOT . '/models/Game.php';
 
 $page = (string) ($_GET['page'] ?? 'home');
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+
+if (isLoggedIn() && $page !== 'multiplayer') {
+    $activeGameId = Game::getActiveMultiplayerGameIdForUser((int) currentUserId());
+
+    if ($activeGameId !== null) {
+        setFlash('error', 'Tienes una partida multijugador en curso. Debes terminarla o abandonarla para salir.');
+        redirectTo('index.php?page=multiplayer');
+    }
+}
 
 switch ($page) {
     case 'home':

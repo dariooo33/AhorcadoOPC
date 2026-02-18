@@ -8,9 +8,13 @@
     const currentUserId = Number(app.dataset.userId || 0);
 
     const waitingBox = document.getElementById('mpWaiting');
+    const foundBox = document.getElementById('mpFound');
+    const foundText = document.getElementById('mpFoundText');
+    const foundCountdown = document.getElementById('mpFoundCountdown');
     const gameBox = document.getElementById('mpGame');
     const keyboard = document.getElementById('mpKeyboard');
     const turnIndicator = document.getElementById('turnIndicator');
+    const abandonButton = document.getElementById('mpAbandonBtn');
     const messageLine = document.getElementById('mpMessage');
     const wordMask = document.getElementById('wordMask');
     const solveForm = document.getElementById('mpSolveForm');
@@ -37,7 +41,15 @@
         queueExitNotified: false,
         isGameFinished: false,
         keyboardMounted: false,
+        introToken: 0,
+        isAbandoning: false,
     };
+
+    function delay(ms) {
+        return new Promise((resolve) => {
+            window.setTimeout(resolve, ms);
+        });
+    }
 
     function setMessage(message, isError = false) {
         messageLine.textContent = message || '';
@@ -111,6 +123,68 @@
         window.setTimeout(findMatch, 2500);
     }
 
+    function isNavigationLocked() {
+        return Boolean(state.gameId) && !state.isWaitingQueue && !state.isGameFinished && !state.isAbandoning;
+    }
+
+    function handleBlockedNavigation() {
+        setMessage('No puedes salir de una partida en curso. Usa "Abandonar partida" si deseas retirarte.', true);
+    }
+
+    function handleBeforeUnload(event) {
+        notifyQueueExit();
+
+        if (!isNavigationLocked()) {
+            return;
+        }
+
+        event.preventDefault();
+        event.returnValue = '';
+    }
+
+    async function playMatchFoundCountdown() {
+        const introToken = ++state.introToken;
+
+        if (!foundBox || !foundText || !foundCountdown) {
+            waitingBox.classList.add('hidden');
+            gameBox.classList.remove('hidden');
+            return true;
+        }
+
+        waitingBox.classList.add('hidden');
+        gameBox.classList.add('hidden');
+        foundBox.classList.remove('hidden');
+
+        const values = [3, 2, 1];
+
+        for (const value of values) {
+            if (introToken !== state.introToken) {
+                return false;
+            }
+
+            foundCountdown.textContent = String(value);
+            foundText.textContent = `Partida encontrada. Iniciando en ${value}...`;
+            await delay(1000);
+        }
+
+        if (introToken !== state.introToken) {
+            return false;
+        }
+
+        foundCountdown.textContent = '0';
+        foundText.textContent = 'Preparando partida...';
+        await delay(1000);
+
+        if (introToken !== state.introToken) {
+            return false;
+        }
+
+        foundBox.classList.add('hidden');
+        gameBox.classList.remove('hidden');
+
+        return true;
+    }
+
     function notifyQueueExit() {
         if (!state.isWaitingQueue || !state.gameId || state.queueExitNotified) {
             return;
@@ -156,6 +230,12 @@
                 state.isWaitingQueue = true;
                 state.gameId = Number(data.game_id) || state.gameId;
                 waitingBox.classList.remove('hidden');
+                if (foundBox) {
+                    foundBox.classList.add('hidden');
+                }
+                if (abandonButton) {
+                    abandonButton.classList.add('hidden');
+                }
                 gameBox.classList.add('hidden');
                 setMessage('Esperando que otro jugador permanezca buscando partida...');
                 scheduleFindMatch();
@@ -164,8 +244,19 @@
 
             state.isWaitingQueue = false;
             state.gameId = Number(data.game_id);
-            waitingBox.classList.add('hidden');
-            gameBox.classList.remove('hidden');
+
+            if (!state.gameId) {
+                setMessage('No se pudo identificar la partida encontrada.', true);
+                scheduleFindMatch();
+                return;
+            }
+
+            const introComplete = await playMatchFoundCountdown();
+
+            if (!introComplete) {
+                return;
+            }
+
             mountKeyboard();
             await refreshState();
 
@@ -190,6 +281,32 @@
         window.HangmanUI.renderHangman(hangman2, game.player2.errors);
         window.HangmanUI.updateKeyboard(keyboard, game.correct_letters, game.incorrect_letters, game.can_play);
 
+        if (abandonButton) {
+            abandonButton.classList.remove('hidden');
+            abandonButton.disabled = state.actionLocked || state.isAbandoning;
+        }
+
+        if (game.status === 'cancelada') {
+            state.isGameFinished = false;
+            state.isWaitingQueue = false;
+            state.gameId = null;
+            turnIndicator.textContent = 'Partida cancelada';
+            setMessage(game.result_text || 'La partida fue cancelada por inactividad.');
+            solveInput.disabled = true;
+            hideSummary();
+            stopPolling();
+            if (foundBox) {
+                foundBox.classList.add('hidden');
+            }
+            if (abandonButton) {
+                abandonButton.classList.add('hidden');
+            }
+            waitingBox.classList.remove('hidden');
+            gameBox.classList.add('hidden');
+            scheduleFindMatch();
+            return;
+        }
+
         if (game.status === 'finalizada') {
             state.isGameFinished = true;
             state.isWaitingQueue = false;
@@ -198,6 +315,9 @@
             solveInput.disabled = true;
             showSummary(game);
             stopPolling();
+            if (abandonButton) {
+                abandonButton.classList.add('hidden');
+            }
             return;
         }
 
@@ -260,6 +380,55 @@
         }
     }
 
+    async function abandonCurrentGame() {
+        if (!state.gameId || state.isWaitingQueue || state.isGameFinished || state.actionLocked || state.isAbandoning) {
+            return;
+        }
+
+        const confirmed = window.confirm('Si abandonas la partida perderas automaticamente y tu rival ganara.');
+
+        if (!confirmed) {
+            return;
+        }
+
+        try {
+            state.actionLocked = true;
+            state.isAbandoning = true;
+
+            if (abandonButton) {
+                abandonButton.disabled = true;
+            }
+
+            const data = await window.HangmanUI.requestJSON('api/multiplayer_abandon.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    game_id: state.gameId,
+                }),
+            });
+
+            if (!data.success) {
+                setMessage(data.message || 'No se pudo abandonar la partida.', true);
+                return;
+            }
+
+            state.isGameFinished = true;
+            setMessage('Abandonaste la partida. El rival gana automaticamente.');
+            await refreshState();
+        } catch (error) {
+            setMessage(error.message, true);
+        } finally {
+            state.actionLocked = false;
+            state.isAbandoning = false;
+
+            if (abandonButton) {
+                abandonButton.disabled = false;
+            }
+        }
+    }
+
     solveForm.addEventListener('submit', async (event) => {
         event.preventDefault();
         const guess = window.HangmanUI.normalizeWord(solveInput.value || '');
@@ -272,8 +441,31 @@
         await sendAction('solve', guess);
     });
 
+    if (abandonButton) {
+        abandonButton.addEventListener('click', async () => {
+            await abandonCurrentGame();
+        });
+    }
+
+    document.addEventListener('click', (event) => {
+        const link = event.target instanceof Element ? event.target.closest('a[href]') : null;
+
+        if (!link || !isNavigationLocked()) {
+            return;
+        }
+
+        const href = (link.getAttribute('href') || '').trim();
+
+        if (href === '' || href.startsWith('#')) {
+            return;
+        }
+
+        event.preventDefault();
+        handleBlockedNavigation();
+    }, true);
+
     window.addEventListener('pagehide', notifyQueueExit);
-    window.addEventListener('beforeunload', notifyQueueExit);
+    window.addEventListener('beforeunload', handleBeforeUnload);
 
     findMatch();
 })();

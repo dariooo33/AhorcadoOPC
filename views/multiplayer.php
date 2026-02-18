@@ -4,10 +4,19 @@
         <p>Para emparejarse, ambos jugadores deben mantenerse en esta pantalla de busqueda.</p>
     </div>
 
+    <div id="mpFound" class="status-box match-found-box hidden" aria-live="polite">
+        <h1>Partida encontrada</h1>
+        <p id="mpFoundText">Conectando jugadores...</p>
+        <div id="mpFoundCountdown" class="match-found-countdown">3</div>
+    </div>
+
     <div id="mpGame" class="hidden">
         <div class="panel-head">
             <h1>Partida multijugador</h1>
-            <span class="chip" id="turnIndicator">Cargando turno...</span>
+            <div class="panel-head-actions">
+                <span class="chip" id="turnIndicator">Cargando turno...</span>
+                <button type="button" class="btn" id="mpAbandonBtn">Abandonar partida</button>
+            </div>
         </div>
 
         <div class="players-grid two-cols">

@@ -3,7 +3,8 @@ declare(strict_types=1);
 
 class Game
 {
-    private const MULTIPLAYER_QUEUE_TIMEOUT_SECONDS = 8;
+    private const MULTIPLAYER_QUEUE_TIMEOUT_SECONDS = 20;
+    private const MULTIPLAYER_ACTIVE_TIMEOUT_SECONDS = 1800;
 
     /**
      * Busca una partida activa del usuario o lo empareja con otra en espera.
@@ -12,6 +13,7 @@ class Game
     {
         $pdo = db();
         self::cancelStaleMultiplayerWaiting($pdo);
+        self::cancelStaleMultiplayerInProgress($pdo);
 
         $existingStmt = $pdo->prepare(
             "SELECT id, estado, jugador1_id, jugador2_id
@@ -19,7 +21,7 @@ class Game
              WHERE tipo = 'multijugador'
                AND estado IN ('esperando', 'en_curso')
                AND (jugador1_id = :user_id_1 OR jugador2_id = :user_id_2)
-             ORDER BY id DESC
+             ORDER BY CASE estado WHEN 'en_curso' THEN 0 ELSE 1 END, id DESC
              LIMIT 1"
         );
         $existingStmt->execute([
@@ -29,15 +31,19 @@ class Game
         $existing = $existingStmt->fetch();
 
         if ($existing) {
+            $existingId = (int) $existing['id'];
             $waiting = (string) $existing['estado'] === 'esperando';
 
             if ($waiting && (int) $existing['jugador1_id'] === $userId && $existing['jugador2_id'] === null) {
-                self::touchMultiplayerWaitingGame($pdo, (int) $existing['id'], $userId);
+                self::touchMultiplayerWaitingGame($pdo, $existingId, $userId);
+                self::cancelDuplicateWaitingMultiplayer($pdo, $userId, $existingId);
+            } elseif (!$waiting) {
+                self::cancelDuplicateWaitingMultiplayer($pdo, $userId);
             }
 
             return [
                 'waiting' => $waiting,
-                'game_id' => (int) $existing['id'],
+                'game_id' => $existingId,
             ];
         }
 
@@ -145,6 +151,27 @@ class Game
         return $stmt->rowCount() > 0;
     }
 
+    public static function getActiveMultiplayerGameIdForUser(int $userId): ?int
+    {
+        $stmt = db()->prepare(
+            "SELECT id
+             FROM partidas
+             WHERE tipo = 'multijugador'
+               AND estado = 'en_curso'
+               AND (jugador1_id = :user_id_1 OR jugador2_id = :user_id_2)
+             ORDER BY id DESC
+             LIMIT 1"
+        );
+        $stmt->execute([
+            'user_id_1' => $userId,
+            'user_id_2' => $userId,
+        ]);
+
+        $gameId = $stmt->fetchColumn();
+
+        return $gameId !== false ? (int) $gameId : null;
+    }
+
     public static function getMultiplayerState(int $gameId, int $userId): ?array
     {
         $stmt = db()->prepare(
@@ -179,6 +206,7 @@ class Game
         $canPlay = $status === 'en_curso' && (int) $game['turno_actual'] === $userId;
 
         $resultText = '';
+        $infoText = '';
 
         if ($status === 'finalizada') {
             $winnerId = $game['ganador_id'] !== null ? (int) $game['ganador_id'] : null;
@@ -190,6 +218,15 @@ class Game
             } else {
                 $resultText = 'Partida finalizada.';
             }
+
+            $infoText = 'Partida finalizada.';
+        } elseif ($status === 'cancelada') {
+            $resultText = 'La partida fue cancelada por inactividad.';
+            $infoText = 'La partida fue cancelada.';
+        } elseif ($status === 'esperando') {
+            $infoText = 'Esperando que se una un rival.';
+        } else {
+            $infoText = $canPlay ? 'Es tu turno.' : 'Es el turno del rival.';
         }
 
         return [
@@ -200,7 +237,7 @@ class Game
             'incorrect_letters' => $incorrect,
             'can_play' => $canPlay,
             'result_text' => $resultText,
-            'info_text' => $canPlay ? 'Es tu turno.' : 'Es el turno del rival.',
+            'info_text' => $infoText,
             'player1' => [
                 'id' => (int) $game['jugador1_id'],
                 'username' => (string) $game['jugador1_username'],
@@ -368,6 +405,104 @@ class Game
 
             throw $exception;
         }
+    }
+
+    public static function abandonMultiplayerGame(int $gameId, int $userId): array
+    {
+        $pdo = db();
+        $pdo->beginTransaction();
+
+        try {
+            $game = null;
+
+            if ($gameId > 0) {
+                $selectedStmt = $pdo->prepare(
+                    "SELECT *
+                     FROM partidas
+                     WHERE id = :game_id
+                       AND tipo = 'multijugador'
+                       AND (jugador1_id = :user_id_1 OR jugador2_id = :user_id_2)
+                     LIMIT 1
+                     FOR UPDATE"
+                );
+                $selectedStmt->execute([
+                    'game_id' => $gameId,
+                    'user_id_1' => $userId,
+                    'user_id_2' => $userId,
+                ]);
+                $selectedGame = $selectedStmt->fetch();
+
+                if ($selectedGame && (string) $selectedGame['estado'] === 'en_curso') {
+                    $game = $selectedGame;
+                }
+            }
+
+            if (!$game) {
+                $game = self::lockLatestActiveMultiplayerForUser($pdo, $userId);
+            }
+
+            if (!$game) {
+                $pdo->rollBack();
+
+                return ['success' => false, 'message' => 'No tienes una partida multijugador en curso para abandonar.'];
+            }
+
+            $player1 = (int) $game['jugador1_id'];
+            $player2 = $game['jugador2_id'] !== null ? (int) $game['jugador2_id'] : null;
+
+            if ($player2 === null) {
+                $pdo->rollBack();
+
+                return ['success' => false, 'message' => 'No hay rival asignado en esta partida.'];
+            }
+
+            $resolvedGameId = (int) $game['id'];
+            $winnerId = $userId === $player1 ? $player2 : $player1;
+            $errors1 = (int) $game['errores_jugador1'];
+            $errors2 = (int) $game['errores_jugador2'];
+            $correct = self::explodeLetters((string) $game['letras_correctas']);
+            $incorrect = self::explodeLetters((string) $game['letras_incorrectas']);
+
+            if ($userId === $player1) {
+                $errors1 = max($errors1, 6);
+            } else {
+                $errors2 = max($errors2, 6);
+            }
+
+            self::finalizeMultiplayer($pdo, $resolvedGameId, $winnerId, $userId, $errors1, $errors2, $correct, $incorrect);
+
+            $pdo->commit();
+
+            return ['success' => true];
+        } catch (Throwable $exception) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+
+            throw $exception;
+        }
+    }
+
+    private static function lockLatestActiveMultiplayerForUser(PDO $pdo, int $userId): ?array
+    {
+        $stmt = $pdo->prepare(
+            "SELECT *
+             FROM partidas
+             WHERE tipo = 'multijugador'
+               AND estado = 'en_curso'
+               AND (jugador1_id = :user_id_1 OR jugador2_id = :user_id_2)
+             ORDER BY id DESC
+             LIMIT 1
+             FOR UPDATE"
+        );
+        $stmt->execute([
+            'user_id_1' => $userId,
+            'user_id_2' => $userId,
+        ]);
+
+        $game = $stmt->fetch();
+
+        return $game ?: null;
     }
 
     public static function createFriendlyRoom(int $creatorId): array
@@ -860,6 +995,45 @@ class Game
         $stmt->execute([
             'timeout_seconds' => self::MULTIPLAYER_QUEUE_TIMEOUT_SECONDS,
         ]);
+    }
+
+    private static function cancelStaleMultiplayerInProgress(PDO $pdo): void
+    {
+        $stmt = $pdo->prepare(
+            "UPDATE partidas
+             SET estado = 'cancelada',
+                 turno_actual = NULL
+             WHERE tipo = 'multijugador'
+               AND estado = 'en_curso'
+               AND ganador_id IS NULL
+               AND TIMESTAMPDIFF(SECOND, fecha_actualizacion, NOW()) > :timeout_seconds"
+        );
+        $stmt->execute([
+            'timeout_seconds' => self::MULTIPLAYER_ACTIVE_TIMEOUT_SECONDS,
+        ]);
+    }
+
+    private static function cancelDuplicateWaitingMultiplayer(PDO $pdo, int $userId, ?int $keepGameId = null): void
+    {
+        $sql = "UPDATE partidas
+                SET estado = 'cancelada',
+                    turno_actual = NULL
+                WHERE tipo = 'multijugador'
+                  AND estado = 'esperando'
+                  AND jugador2_id IS NULL
+                  AND jugador1_id = :user_id";
+
+        $params = [
+            'user_id' => $userId,
+        ];
+
+        if ($keepGameId !== null) {
+            $sql .= ' AND id <> :keep_game_id';
+            $params['keep_game_id'] = $keepGameId;
+        }
+
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($params);
     }
 
     private static function touchMultiplayerWaitingGame(PDO $pdo, int $gameId, int $userId): void
