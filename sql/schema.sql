@@ -74,7 +74,29 @@ CREATE TABLE IF NOT EXISTS sala_jugadores (
     CONSTRAINT fk_sala_jugador_usuario FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
--- 7) Semilla de palabras
+-- 7) Relacion de amistades
+CREATE TABLE IF NOT EXISTS amistades (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    usuario1_id INT NOT NULL,
+    usuario2_id INT NOT NULL,
+    fecha_creacion DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_amistad_par (usuario1_id, usuario2_id),
+    CONSTRAINT fk_amistad_usuario1 FOREIGN KEY (usuario1_id) REFERENCES usuarios(id) ON DELETE CASCADE,
+    CONSTRAINT fk_amistad_usuario2 FOREIGN KEY (usuario2_id) REFERENCES usuarios(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- 8) Solicitudes de amistad pendientes
+CREATE TABLE IF NOT EXISTS solicitudes_amistad (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    emisor_id INT NOT NULL,
+    receptor_id INT NOT NULL,
+    fecha_creacion DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_solicitud_direccion (emisor_id, receptor_id),
+    CONSTRAINT fk_solicitud_emisor FOREIGN KEY (emisor_id) REFERENCES usuarios(id) ON DELETE CASCADE,
+    CONSTRAINT fk_solicitud_receptor FOREIGN KEY (receptor_id) REFERENCES usuarios(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- 9) Semilla de palabras
 INSERT IGNORE INTO palabras (palabra) VALUES
 ('ALGORITMO'),
 ('DESARROLLO'),

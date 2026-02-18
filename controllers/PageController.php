@@ -48,6 +48,17 @@ function showProfilePage(): void
     ]);
 }
 
+function showFriendsPage(): void
+{
+    requireLogin();
+
+    render('friends', [
+        'title' => 'Amigos | Ahorcado OPC',
+        'currentPage' => 'friends',
+        'pageScript' => 'friends.js',
+    ]);
+}
+
 function showMultiplayerPage(): void
 {
     requireLogin();

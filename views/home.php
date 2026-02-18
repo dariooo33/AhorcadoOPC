@@ -30,4 +30,5 @@
             <a class="btn" href="index.php?page=login">Requiere login</a>
         <?php endif; ?>
     </article>
+
 </section>

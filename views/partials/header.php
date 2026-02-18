@@ -23,6 +23,7 @@
 
                 <?php if (isLoggedIn()): ?>
                     <a class="<?= $currentPage === 'profile' ? 'is-active' : '' ?>" href="index.php?page=profile">Perfil</a>
+                    <a class="<?= $currentPage === 'friends' ? 'is-active' : '' ?>" href="index.php?page=friends">Amigos</a>
                     <a href="index.php?page=logout">Logout</a>
                 <?php else: ?>
                     <a class="<?= $currentPage === 'login' ? 'is-active' : '' ?>" href="index.php?page=login">Login</a>

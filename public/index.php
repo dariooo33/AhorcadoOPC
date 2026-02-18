@@ -68,6 +68,10 @@ switch ($page) {
         showProfilePage();
         break;
 
+    case 'friends':
+        showFriendsPage();
+        break;
+
     case 'multiplayer':
         showMultiplayerPage();
         break;
