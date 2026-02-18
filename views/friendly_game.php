@@ -1,7 +1,10 @@
 <section class="panel" id="friendlyGameApp" data-room-code="<?= e((string) $roomCode) ?>">
     <div class="panel-head">
         <h1>Partida amistosa</h1>
-        <span class="chip">Sala: <?= e((string) $roomCode) ?></span>
+        <div class="panel-head-actions">
+            <span class="chip">Sala: <?= e((string) $roomCode) ?></span>
+            <button id="friendlyAbandonBtn" class="btn hidden" type="button">Abandonar partida</button>
+        </div>
     </div>
 
     <p>En este modo cooperativo comparten aciertos y errores. No afecta trofeos ni winrate.</p>
@@ -25,4 +28,11 @@
     </form>
 
     <p id="friendlyGameMessage" class="message-line"></p>
+
+    <div id="friendlyReplayActions" class="summary-actions hidden">
+        <button id="friendlyReplayBtn" class="btn btn-primary" type="button">Volver a jugar</button>
+        <a class="btn" href="index.php?page=home">Volver al menu</a>
+    </div>
+
+    <p id="friendlyReplayStatus" class="small-text hidden"></p>
 </section>

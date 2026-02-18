@@ -70,7 +70,8 @@
             <p id="mpSummaryTrophies" class="small-text"></p>
 
             <div class="summary-actions">
-                <a class="btn btn-primary" href="index.php?page=home">Volver al menu</a>
+                <button type="button" class="btn btn-primary" id="mpReplayBtn">Volver a jugar</button>
+                <a class="btn" href="index.php?page=home">Volver al menu</a>
             </div>
         </section>
     </div>

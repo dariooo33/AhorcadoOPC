@@ -172,6 +172,28 @@ class Game
         return $gameId !== false ? (int) $gameId : null;
     }
 
+    public static function getActiveFriendlyRoomCodeForUser(int $userId): ?string
+    {
+        $stmt = db()->prepare(
+            "SELECT s.codigo
+             FROM salas s
+             INNER JOIN partidas p ON p.id = s.partida_id
+             INNER JOIN sala_jugadores sj ON sj.sala_id = s.id
+             WHERE p.tipo = 'amistoso'
+               AND p.estado = 'en_curso'
+               AND sj.usuario_id = :user_id
+             ORDER BY p.id DESC
+             LIMIT 1"
+        );
+        $stmt->execute([
+            'user_id' => $userId,
+        ]);
+
+        $code = $stmt->fetchColumn();
+
+        return $code !== false ? (string) $code : null;
+    }
+
     public static function getMultiplayerState(int $gameId, int $userId): ?array
     {
         $stmt = db()->prepare(
@@ -827,6 +849,9 @@ class Game
         $incorrect = self::explodeLetters((string) $game['letras_incorrectas']);
         $status = (string) $game['estado'];
         $sharedErrors = (int) $game['errores_jugador1'];
+        $readyRematchUserIds = $status === 'finalizada' ? self::resolveFriendlyRematchReadyIds($game) : [];
+        $rematchRequiredCount = min(2, count($players));
+        $currentUserReadyForRematch = in_array($userId, $readyRematchUserIds, true);
 
         $resultText = '';
         if ($status === 'finalizada') {
@@ -834,6 +859,36 @@ class Game
                 $resultText = 'Victoria cooperativa: resolvieron la palabra.';
             } else {
                 $resultText = 'Derrota cooperativa: alcanzaron el maximo de errores.';
+            }
+        }
+
+        $cancelMessage = '';
+        if ($status === 'cancelada') {
+            $abandonUserId = $game['turno_actual'] !== null ? (int) $game['turno_actual'] : null;
+
+            if ($abandonUserId === null) {
+                $cancelMessage = 'La partida cooperativa fue cancelada.';
+            } elseif ($abandonUserId === $userId) {
+                $cancelMessage = 'Has abandonado la partida cooperativa.';
+            } else {
+                $cancelMessage = 'Tu companero ha abandonado la partida.';
+            }
+        }
+
+        $rematchStatusText = '';
+        if ($status === 'finalizada') {
+            $readyCount = count($readyRematchUserIds);
+
+            if ($rematchRequiredCount < 2) {
+                $rematchStatusText = 'Se necesitan 2 jugadores para iniciar una revancha.';
+            } elseif ($readyCount === 0) {
+                $rematchStatusText = 'Pulsa "Volver a jugar" para pedir revancha.';
+            } elseif ($readyCount === 1) {
+                $rematchStatusText = $currentUserReadyForRematch
+                    ? 'Esperando que el otro jugador pulse "Volver a jugar"...'
+                    : 'El otro jugador ya pidio revancha. Pulsa "Volver a jugar" para aceptar.';
+            } else {
+                $rematchStatusText = 'Iniciando revancha...';
             }
         }
 
@@ -846,6 +901,11 @@ class Game
             'incorrect_letters' => $incorrect,
             'can_play' => $status === 'en_curso',
             'result_text' => $resultText,
+            'cancel_message' => $cancelMessage,
+            'rematch_user_ready' => $status === 'finalizada' ? $currentUserReadyForRematch : false,
+            'rematch_ready_count' => $status === 'finalizada' ? count($readyRematchUserIds) : 0,
+            'rematch_required_count' => $status === 'finalizada' ? $rematchRequiredCount : 0,
+            'rematch_status_text' => $rematchStatusText,
         ];
     }
 
@@ -868,7 +928,11 @@ class Game
                         p.palabra,
                         p.letras_correctas,
                         p.letras_incorrectas,
-                        p.errores_jugador1
+                        p.errores_jugador1,
+                        p.jugador1_id,
+                        p.jugador2_id,
+                        p.turno_actual,
+                        p.ganador_id
                  FROM salas s
                  INNER JOIN partidas p ON p.id = s.partida_id
                  INNER JOIN sala_jugadores sj ON sj.sala_id = s.id
@@ -889,7 +953,83 @@ class Game
                 return ['success' => false, 'message' => 'No tienes acceso a esta sala.'];
             }
 
-            if ((string) $game['estado'] !== 'en_curso') {
+            $gameStatus = (string) $game['estado'];
+
+            if ($action === 'replay') {
+                if ($gameStatus !== 'finalizada') {
+                    $pdo->rollBack();
+
+                    return ['success' => false, 'message' => 'Solo puedes pedir revancha cuando la partida termina.'];
+                }
+
+                $player1Id = (int) $game['jugador1_id'];
+                $player2Id = $game['jugador2_id'] !== null ? (int) $game['jugador2_id'] : null;
+
+                if ($player2Id === null) {
+                    $pdo->rollBack();
+
+                    return ['success' => false, 'message' => 'Falta un jugador para iniciar la revancha.'];
+                }
+
+                $turnReadyUser = $game['turno_actual'] !== null ? (int) $game['turno_actual'] : null;
+                $winnerReadyUser = $game['ganador_id'] !== null ? (int) $game['ganador_id'] : null;
+
+                if ($turnReadyUser !== $userId && $winnerReadyUser !== $userId) {
+                    if ($turnReadyUser === null) {
+                        $markReadyStmt = $pdo->prepare('UPDATE partidas SET turno_actual = :usuario_id WHERE id = :id');
+                        $markReadyStmt->execute([
+                            'usuario_id' => $userId,
+                            'id' => (int) $game['partida_id'],
+                        ]);
+                        $game['turno_actual'] = $userId;
+                    } elseif ($winnerReadyUser === null) {
+                        $markReadyStmt = $pdo->prepare('UPDATE partidas SET ganador_id = :usuario_id WHERE id = :id');
+                        $markReadyStmt->execute([
+                            'usuario_id' => $userId,
+                            'id' => (int) $game['partida_id'],
+                        ]);
+                        $game['ganador_id'] = $userId;
+                    }
+                }
+
+                $readyRematchUserIds = self::resolveFriendlyRematchReadyIds($game);
+                $started = false;
+
+                if (count($readyRematchUserIds) >= 2 && in_array($player1Id, $readyRematchUserIds, true) && in_array($player2Id, $readyRematchUserIds, true)) {
+                    $newWord = self::getRandomWord($pdo);
+
+                    $restartStmt = $pdo->prepare(
+                        "UPDATE partidas
+                         SET estado = 'en_curso',
+                             palabra = :palabra,
+                             turno_actual = NULL,
+                             ganador_id = NULL,
+                             errores_jugador1 = 0,
+                             errores_jugador2 = 0,
+                             letras_correctas = '',
+                             letras_incorrectas = ''
+                         WHERE id = :id"
+                    );
+                    $restartStmt->execute([
+                        'palabra' => $newWord,
+                        'id' => (int) $game['partida_id'],
+                    ]);
+
+                    $reopenRoomStmt = $pdo->prepare('UPDATE salas SET estado = \'en_juego\' WHERE id = :id');
+                    $reopenRoomStmt->execute(['id' => (int) $game['sala_id']]);
+
+                    $started = true;
+                }
+
+                $pdo->commit();
+
+                return [
+                    'success' => true,
+                    'rematch_started' => $started,
+                ];
+            }
+
+            if ($gameStatus !== 'en_curso') {
                 $pdo->rollBack();
 
                 return ['success' => false, 'message' => 'La partida amistosa no esta en curso.'];
@@ -964,10 +1104,92 @@ class Game
                 'id' => (int) $game['partida_id'],
             ]);
 
-            if ($status === 'finalizada') {
-                $closeRoomStmt = $pdo->prepare('UPDATE salas SET estado = \'cerrada\' WHERE id = :id');
-                $closeRoomStmt->execute(['id' => (int) $game['sala_id']]);
+            $pdo->commit();
+
+            return ['success' => true];
+        } catch (Throwable $exception) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
             }
+
+            throw $exception;
+        }
+    }
+
+    public static function abandonFriendlyGame(string $roomCode, int $userId): array
+    {
+        $code = self::normalizeRoomCode($roomCode);
+
+        if ($code === '') {
+            return ['success' => false, 'message' => 'Codigo de sala invalido.'];
+        }
+
+        $pdo = db();
+        $pdo->beginTransaction();
+
+        try {
+            $stmt = $pdo->prepare(
+                "SELECT s.id AS sala_id,
+                        p.id AS partida_id,
+                        p.estado
+                 FROM salas s
+                 INNER JOIN partidas p ON p.id = s.partida_id
+                 INNER JOIN sala_jugadores sj ON sj.sala_id = s.id
+                 WHERE s.codigo = :codigo
+                   AND sj.usuario_id = :usuario_id
+                 LIMIT 1
+                 FOR UPDATE"
+            );
+            $stmt->execute([
+                'codigo' => $code,
+                'usuario_id' => $userId,
+            ]);
+            $game = $stmt->fetch();
+
+            if (!$game) {
+                $pdo->rollBack();
+
+                return ['success' => false, 'message' => 'No tienes acceso a esta sala.'];
+            }
+
+            $status = (string) $game['estado'];
+
+            if ($status === 'cancelada') {
+                $pdo->commit();
+
+                return ['success' => true];
+            }
+
+            if ($status !== 'en_curso') {
+                $pdo->rollBack();
+
+                return ['success' => false, 'message' => 'Solo puedes abandonar una partida en curso.'];
+            }
+
+            $cancelStmt = $pdo->prepare(
+                "UPDATE partidas
+                 SET estado = 'cancelada',
+                     turno_actual = :abandono_id,
+                     ganador_id = NULL
+                 WHERE id = :id"
+            );
+            $cancelStmt->execute([
+                'abandono_id' => $userId,
+                'id' => (int) $game['partida_id'],
+            ]);
+
+            $closeRoomStmt = $pdo->prepare('UPDATE salas SET estado = \'cerrada\' WHERE id = :id');
+            $closeRoomStmt->execute([
+                'id' => (int) $game['sala_id'],
+            ]);
+
+            $removePlayerStmt = $pdo->prepare(
+                'DELETE FROM sala_jugadores WHERE sala_id = :sala_id AND usuario_id = :usuario_id'
+            );
+            $removePlayerStmt->execute([
+                'sala_id' => (int) $game['sala_id'],
+                'usuario_id' => $userId,
+            ]);
 
             $pdo->commit();
 
@@ -979,6 +1201,35 @@ class Game
 
             throw $exception;
         }
+    }
+
+    private static function resolveFriendlyRematchReadyIds(array $game): array
+    {
+        $player1Id = (int) ($game['jugador1_id'] ?? 0);
+        $player2Id = isset($game['jugador2_id']) && $game['jugador2_id'] !== null ? (int) $game['jugador2_id'] : null;
+
+        $readyIds = [];
+        $candidates = [];
+
+        if (isset($game['turno_actual']) && $game['turno_actual'] !== null) {
+            $candidates[] = (int) $game['turno_actual'];
+        }
+
+        if (isset($game['ganador_id']) && $game['ganador_id'] !== null) {
+            $candidates[] = (int) $game['ganador_id'];
+        }
+
+        foreach ($candidates as $candidate) {
+            if ($candidate !== $player1Id && $candidate !== $player2Id) {
+                continue;
+            }
+
+            if (!in_array($candidate, $readyIds, true)) {
+                $readyIds[] = $candidate;
+            }
+        }
+
+        return $readyIds;
     }
 
     private static function cancelStaleMultiplayerWaiting(PDO $pdo): void

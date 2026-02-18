@@ -32,6 +32,7 @@
     const summaryWord = document.getElementById('mpSummaryWord');
     const summaryErrors = document.getElementById('mpSummaryErrors');
     const summaryTrophies = document.getElementById('mpSummaryTrophies');
+    const replayButton = document.getElementById('mpReplayBtn');
 
     const state = {
         gameId: null,
@@ -121,6 +122,44 @@
 
     function scheduleFindMatch() {
         window.setTimeout(findMatch, 2500);
+    }
+
+    function prepareReplaySearch() {
+        stopPolling();
+
+        state.introToken++;
+        state.gameId = null;
+        state.isWaitingQueue = false;
+        state.queueExitNotified = false;
+        state.isGameFinished = false;
+        state.actionLocked = false;
+        state.isAbandoning = false;
+
+        if (foundBox) {
+            foundBox.classList.add('hidden');
+        }
+
+        if (abandonButton) {
+            abandonButton.classList.add('hidden');
+            abandonButton.disabled = false;
+        }
+
+        hideSummary();
+        waitingBox.classList.remove('hidden');
+        gameBox.classList.add('hidden');
+        solveInput.value = '';
+        solveInput.disabled = true;
+        turnIndicator.textContent = 'Buscando rival...';
+        setMessage('Buscando nueva partida...');
+    }
+
+    async function replayMultiplayer() {
+        if (state.actionLocked || state.isAbandoning) {
+            return;
+        }
+
+        prepareReplaySearch();
+        await findMatch();
     }
 
     function isNavigationLocked() {
@@ -444,6 +483,12 @@
     if (abandonButton) {
         abandonButton.addEventListener('click', async () => {
             await abandonCurrentGame();
+        });
+    }
+
+    if (replayButton) {
+        replayButton.addEventListener('click', async () => {
+            await replayMultiplayer();
         });
     }
 

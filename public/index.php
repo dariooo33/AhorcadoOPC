@@ -9,12 +9,27 @@ require_once APP_ROOT . '/models/Game.php';
 $page = (string) ($_GET['page'] ?? 'home');
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
-if (isLoggedIn() && $page !== 'multiplayer') {
-    $activeGameId = Game::getActiveMultiplayerGameIdForUser((int) currentUserId());
+if (isLoggedIn()) {
+    $userId = (int) currentUserId();
 
-    if ($activeGameId !== null) {
-        setFlash('error', 'Tienes una partida multijugador en curso. Debes terminarla o abandonarla para salir.');
-        redirectTo('index.php?page=multiplayer');
+    if ($page !== 'multiplayer') {
+        $activeGameId = Game::getActiveMultiplayerGameIdForUser($userId);
+
+        if ($activeGameId !== null) {
+            setFlash('error', 'Tienes una partida multijugador en curso. Debes terminarla o abandonarla para salir.');
+            redirectTo('index.php?page=multiplayer');
+        }
+    }
+
+    $activeFriendlyCode = Game::getActiveFriendlyRoomCodeForUser($userId);
+
+    if ($activeFriendlyCode !== null) {
+        $requestedFriendlyCode = strtoupper(trim((string) ($_GET['code'] ?? '')));
+
+        if ($page !== 'friendly_game' || $requestedFriendlyCode !== $activeFriendlyCode) {
+            setFlash('error', 'Tienes una partida cooperativa en curso. Debes terminarla o abandonarla para salir.');
+            redirectTo('index.php?page=friendly_game&code=' . urlencode($activeFriendlyCode));
+        }
     }
 }
 
